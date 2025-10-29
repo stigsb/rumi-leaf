@@ -409,6 +409,25 @@ def create_medallion(diameter_mm=50.0, image_path='green-leaf.png',
             y = placement_radius * np.sin(angle_rad)
             leaf_copy.apply_translation([x, y, leaf_z_offset])
 
+            # Apply curvature to the leaf to match the medallion's convex surface
+            # For each vertex, calculate its distance from the medallion center and
+            # adjust its height to match the curved surface
+            vertices = leaf_copy.vertices.copy()
+            for j, vertex in enumerate(vertices):
+                # Calculate distance from medallion center (in XY plane)
+                vertex_radius = np.sqrt(vertex[0]**2 + vertex[1]**2)
+
+                # Calculate what the surface height should be at this radius
+                target_surface_height = get_surface_height_at_radius(vertex_radius)
+
+                # Calculate what the surface height was at the placement radius (our reference)
+                reference_surface_height = get_surface_height_at_radius(placement_radius)
+
+                # Adjust the vertex height by the difference
+                height_adjustment = target_surface_height - reference_surface_height
+                vertices[j][2] += height_adjustment
+
+            leaf_copy.vertices = vertices
             leaves.append(leaf_copy)
 
         # Create center disc floret
