@@ -46,9 +46,9 @@ def test_generate_medallion_default():
         max_dimension = max(extents[0], extents[1])
         assert 45 < max_dimension < 55, f"Medallion dimension {max_dimension}mm is not close to expected 50mm"
 
-        # Thickness should be approximately 50/20 = 2.5mm
+        # Thickness should be approximately 50/20 = 2.5mm base + convexity (1.5mm) + ridges + leaves
         thickness = extents[2]
-        assert 2.0 < thickness < 8.0, f"Medallion thickness {thickness}mm seems incorrect"
+        assert 2.0 < thickness < 10.0, f"Medallion thickness {thickness}mm seems incorrect"
 
         print(f"✓ Default medallion test passed")
         print(f"  Vertices: {len(mesh.vertices)}")
@@ -87,9 +87,9 @@ def test_generate_medallion_custom_size():
         max_dimension = max(extents[0], extents[1])
         assert 75 < max_dimension < 85, f"Medallion dimension {max_dimension}mm is not close to expected 80mm"
 
-        # Thickness should be approximately 80/20 = 4mm
+        # Thickness should be approximately 80/20 = 4mm base + convexity (2.4mm) + ridges + leaves
         thickness = extents[2]
-        assert 3.0 < thickness < 10.0, f"Medallion thickness {thickness}mm seems incorrect"
+        assert 3.0 < thickness < 15.0, f"Medallion thickness {thickness}mm seems incorrect"
 
         print(f"✓ Custom size medallion test passed")
         print(f"  Vertices: {len(mesh.vertices)}")

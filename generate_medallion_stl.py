@@ -63,10 +63,29 @@ def simplify_mesh(mesh, target_faces):
 
 
 
-def create_medallion_base(diameter, thickness, resolution=64):
-    """Create the base disc of the medallion with rounded upper outer corner."""
+def create_medallion_base(diameter, thickness, resolution=64,
+                          num_ridges=3, ridge_amplitude=0.3,
+                          ridge_inner_ratio=0.45, ridge_outer_ratio=0.85,
+                          convexity_height=None):
+    """
+    Create the base disc of the medallion with rounded upper outer corner and concentric ridges.
+
+    Args:
+        diameter: Diameter of the medallion
+        thickness: Thickness of the medallion
+        resolution: Angular resolution (segments around the circle)
+        num_ridges: Number of concentric ridges (default 3)
+        ridge_amplitude: Height of ridges as fraction of thickness (default 0.3)
+        ridge_inner_ratio: Inner radius for ridges as fraction of medallion radius (default 0.15)
+        ridge_outer_ratio: Outer radius for ridges as fraction of medallion radius (default 0.85)
+        convexity_height: Additional height at center for convex dome effect (default: 3% of diameter)
+    """
     radius = diameter / 2
     corner_radius = diameter * 0.01  # 1% of diameter
+
+    # Set default convexity if not provided
+    if convexity_height is None:
+        convexity_height = diameter * 0.03  # 3% of diameter for subtle dome
 
     vertices = []
     faces = []
@@ -74,17 +93,49 @@ def create_medallion_base(diameter, thickness, resolution=64):
     # Define layers
     angular_segments = resolution
     corner_segments = 6  # Segments for the rounded corner arc
+    radial_segments = 16  # Number of radial rings on top surface for smooth ridges
 
     # Inner radius and height (where rounding starts)
     inner_radius = radius - corner_radius
     inner_height = thickness - corner_radius
 
+    # Helper function to calculate convex dome height based on radial position
+    def get_convex_height(r):
+        """Calculate dome height based on radius using parabolic curve."""
+        # Parabolic curve: height decreases from center to edge
+        # At center (r=0): full convexity_height
+        # At edge (r=radius): 0
+        normalized_r = min(r / radius, 1.0)  # Normalize to [0, 1]
+        return convexity_height * (1.0 - normalized_r**2)
+
+    # Helper function to calculate ridge height modulation
+    def get_ridge_height(r):
+        """Calculate height modulation based on radius for ridge effect."""
+        # Only apply ridges in the specified radial range
+        ridge_inner_r = radius * ridge_inner_ratio
+        ridge_outer_r = radius * ridge_outer_ratio
+
+        if r < ridge_inner_r or r > ridge_outer_r:
+            return 0.0
+
+        # Normalize radius to [0, 1] within ridge zone
+        normalized_r = (r - ridge_inner_r) / (ridge_outer_r - ridge_inner_r)
+
+        # Create smooth rounded ridges using absolute value of sine wave
+        # This creates smooth humps (like the top of a sine wave repeated)
+        wave = np.abs(np.sin(normalized_r * num_ridges * np.pi))
+
+        # Apply amplitude
+        return wave * ridge_amplitude * thickness
+
     # Bottom center
     vertices.append([0, 0, 0])
     bottom_center_idx = 0
 
-    # Top center (at inner height since top surface is flat until corner)
-    vertices.append([0, 0, inner_height])
+    # Top center with ridge modulation and convexity
+    center_ridge_height = get_ridge_height(0)
+    center_convex_height = get_convex_height(0)
+    vertices.append([0, 0, inner_height + center_ridge_height + center_convex_height])
     top_center_idx = 1
 
     # Create bottom ring vertices (outer wall base)
@@ -101,12 +152,25 @@ def create_medallion_base(diameter, thickness, resolution=64):
         y = radius * np.sin(angle)
         vertices.append([x, y, inner_height])
 
-    # Create inner top ring (where flat top surface ends and corner starts)
-    for seg in range(angular_segments):
-        angle = 2 * np.pi * seg / angular_segments
-        x = inner_radius * np.cos(angle)
-        y = inner_radius * np.sin(angle)
-        vertices.append([x, y, thickness])
+    # Create multiple radial rings on the top surface for smooth ridges
+    top_rings_start = len(vertices)
+    for ring_idx in range(radial_segments):
+        # Radius for this ring (from near-center to inner_radius)
+        ring_ratio = (ring_idx + 1) / radial_segments
+        ring_radius = inner_radius * ring_ratio
+
+        for seg in range(angular_segments):
+            angle = 2 * np.pi * seg / angular_segments
+            x = ring_radius * np.cos(angle)
+            y = ring_radius * np.sin(angle)
+
+            # Calculate base height with ridge modulation and convexity
+            base_z = thickness
+            ridge_height = get_ridge_height(ring_radius)
+            convex_height = get_convex_height(ring_radius)
+            z = base_z + ridge_height + convex_height
+
+            vertices.append([x, y, z])
 
     # Create rounded corner vertices (quarter-circle arc)
     for corner_step in range(corner_segments - 1):
@@ -116,7 +180,11 @@ def create_medallion_base(diameter, thickness, resolution=64):
         # Arc center is at (inner_radius, inner_height)
         # Arc goes from (inner_radius, thickness) at 0° to (radius, inner_height) at 90°
         r = inner_radius + corner_radius * np.sin(corner_angle)
-        z = inner_height + corner_radius * np.cos(corner_angle)
+        base_z = inner_height + corner_radius * np.cos(corner_angle)
+
+        # Apply convexity to corner vertices
+        convex_height = get_convex_height(r)
+        z = base_z + convex_height
 
         for seg in range(angular_segments):
             angle = 2 * np.pi * seg / angular_segments
@@ -127,8 +195,9 @@ def create_medallion_base(diameter, thickness, resolution=64):
     # Ring indices
     bottom_ring_start = 2
     outer_wall_top_ring = 2 + angular_segments
-    inner_top_ring = 2 + 2 * angular_segments
-    first_corner_ring = 2 + 3 * angular_segments
+    # top_rings_start was already set above
+    inner_top_ring = top_rings_start + (radial_segments - 1) * angular_segments  # Outermost radial ring
+    first_corner_ring = top_rings_start + radial_segments * angular_segments
 
     # Create faces
     # Bottom cap - from center to bottom ring
@@ -138,12 +207,28 @@ def create_medallion_base(diameter, thickness, resolution=64):
         v2 = bottom_ring_start + next_seg
         faces.append([bottom_center_idx, v2, v1])
 
-    # Top cap - from center to inner top ring
+    # Top surface - connect center to first radial ring
+    first_ring_start = top_rings_start
     for seg in range(angular_segments):
         next_seg = (seg + 1) % angular_segments
-        v1 = inner_top_ring + seg
-        v2 = inner_top_ring + next_seg
+        v1 = first_ring_start + seg
+        v2 = first_ring_start + next_seg
         faces.append([top_center_idx, v1, v2])
+
+    # Top surface - connect radial rings to each other
+    for ring_idx in range(radial_segments - 1):
+        ring1_start = top_rings_start + ring_idx * angular_segments
+        ring2_start = top_rings_start + (ring_idx + 1) * angular_segments
+
+        for seg in range(angular_segments):
+            next_seg = (seg + 1) % angular_segments
+            v1 = ring1_start + seg
+            v2 = ring1_start + next_seg
+            v3 = ring2_start + seg
+            v4 = ring2_start + next_seg
+
+            faces.append([v1, v2, v4])
+            faces.append([v1, v4, v3])
 
     # Vertical outer wall - from bottom ring to outer wall top
     for seg in range(angular_segments):
@@ -190,13 +275,22 @@ def create_medallion_base(diameter, thickness, resolution=64):
     return mesh
 
 
-def create_medallion(diameter_mm=50.0, image_path='green-leaf.png'):
+def create_medallion(diameter_mm=50.0, image_path='green-leaf.png',
+                     num_ridges=3, ridge_amplitude=0.3,
+                     ridge_inner_ratio=0.15, ridge_outer_ratio=0.85,
+                     leaf_thickness_scale=1.5, convexity_height=None):
     """
     Create a medallion with six leaves arranged in a circle.
 
     Args:
         diameter_mm: Diameter of the medallion in millimeters (default 50mm = 5cm)
         image_path: Path to the leaf image
+        num_ridges: Number of concentric ridges on base (default 3)
+        ridge_amplitude: Height of ridges as fraction of thickness (default 0.3)
+        ridge_inner_ratio: Inner radius for ridges as fraction of medallion radius (default 0.15)
+        ridge_outer_ratio: Outer radius for ridges as fraction of medallion radius (default 0.85)
+        leaf_thickness_scale: Scale factor for leaf z-dimension thickness (default 1.5 = 50% thicker)
+        convexity_height: Additional height at center for convex dome effect (default: 3% of diameter)
 
     Returns:
         A trimesh object representing the complete medallion
@@ -205,90 +299,137 @@ def create_medallion(diameter_mm=50.0, image_path='green-leaf.png'):
     thickness = diameter_mm / 20.0
     radius = diameter_mm / 2.0
 
+    # Set default convexity if not provided
+    if convexity_height is None:
+        convexity_height = diameter_mm * 0.03  # 3% of diameter for subtle dome
+
     print(f"Creating medallion: {diameter_mm}mm diameter, {thickness}mm thickness")
+    print(f"Ridge configuration: {num_ridges} ridges, amplitude={ridge_amplitude}")
+    print(f"Convexity: {convexity_height:.2f}mm dome height at center")
 
-    # Create base disc
-    print("Creating base disc...")
-    base = create_medallion_base(diameter_mm, thickness)
+    # Create base disc with ridges and convexity
+    print("Creating base disc with concentric ridges and convex surface...")
+    base = create_medallion_base(diameter_mm, thickness,
+                                  num_ridges=num_ridges,
+                                  ridge_amplitude=ridge_amplitude,
+                                  ridge_inner_ratio=ridge_inner_ratio,
+                                  ridge_outer_ratio=ridge_outer_ratio,
+                                  convexity_height=convexity_height)
 
-    # Generate leaf mesh
-    print("Generating leaf mesh...")
-    leaf_mesh = create_leaf_mesh(image_path)
+    all_meshes = [base]
+    generate_leaves = True
+    if generate_leaves:
+        # Generate leaf mesh
+        print("Generating leaf mesh...")
+        leaf_mesh = create_leaf_mesh(image_path)
 
-    # Get leaf bounds to determine scaling
-    leaf_bounds = leaf_mesh.bounds
-    leaf_width = leaf_bounds[1][0] - leaf_bounds[0][0]
-    leaf_height = leaf_bounds[1][1] - leaf_bounds[0][1]
-    leaf_depth = leaf_bounds[1][2] - leaf_bounds[0][2]
+        # Get leaf bounds to determine scaling
+        leaf_bounds = leaf_mesh.bounds
+        leaf_width = leaf_bounds[1][0] - leaf_bounds[0][0]
+        leaf_height = leaf_bounds[1][1] - leaf_bounds[0][1]
+        leaf_depth = leaf_bounds[1][2] - leaf_bounds[0][2]
 
-    print(f"Original leaf size: {leaf_width:.2f} x {leaf_height:.2f} x {leaf_depth:.2f} mm")
+        print(f"Original leaf size: {leaf_width:.2f} x {leaf_height:.2f} x {leaf_depth:.2f} mm")
 
-    # Scale leaf to fit within 60% of medallion radius
-    target_leaf_size = diameter_mm * 0.7 * 0.5
-    current_max_dimension = max(leaf_width, leaf_height)
-    scale_factor = target_leaf_size / current_max_dimension
+        # Scale leaf to fit within 60% of medallion radius
+        target_leaf_size = diameter_mm * 0.7 * 0.5
+        current_max_dimension = max(leaf_width, leaf_height)
+        scale_factor = target_leaf_size / current_max_dimension
 
-    print(f"Scaling leaf by factor: {scale_factor:.3f}")
-    leaf_mesh.apply_scale(scale_factor)
+        print(f"Scaling leaf by factor: {scale_factor:.3f}")
+        leaf_mesh.apply_scale(scale_factor)
 
-    # Simplify the leaf mesh to reduce polygon count
-    # Target approximately 500-1000 faces per leaf (reasonable detail)
-    target_faces = min(1000, len(leaf_mesh.faces) // 2)
-    print(f"Simplifying leaf from {len(leaf_mesh.faces)} to ~{target_faces} faces...")
-    leaf_mesh = simplify_mesh(leaf_mesh, target_faces)
-    print(f"Simplified leaf has {len(leaf_mesh.faces)} faces")
+        # Apply additional thickness scaling in z-direction to rise above ridges
+        if leaf_thickness_scale != 1.0:
+            print(f"Scaling leaf thickness by {leaf_thickness_scale:.2f}x to rise above ridges")
+            leaf_mesh.apply_scale([1.0, 1.0, leaf_thickness_scale])
 
-    # Update bounds after scaling
-    leaf_bounds = leaf_mesh.bounds
-    leaf_width_scaled = leaf_bounds[1][0] - leaf_bounds[0][0]
-    leaf_height_scaled = leaf_bounds[1][1] - leaf_bounds[0][1]
+        # Simplify the leaf mesh to reduce polygon count
+        # Target approximately 500-1000 faces per leaf (reasonable detail)
+        target_faces = min(1000, len(leaf_mesh.faces) // 2)
+        print(f"Simplifying leaf from {len(leaf_mesh.faces)} to ~{target_faces} faces...")
+        leaf_mesh = simplify_mesh(leaf_mesh, target_faces)
+        print(f"Simplified leaf has {len(leaf_mesh.faces)} faces")
 
-    # Calculate distance from center to place leaves
-    # We want the tip (furthest point) to touch the outer edge
-    max_leaf_extent = max(leaf_width_scaled, leaf_height_scaled) / 2
-    placement_radius = (radius * 0.95) - max_leaf_extent
+        # Update bounds after scaling
+        leaf_bounds = leaf_mesh.bounds
+        leaf_width_scaled = leaf_bounds[1][0] - leaf_bounds[0][0]
+        leaf_height_scaled = leaf_bounds[1][1] - leaf_bounds[0][1]
 
-    # Calculate the offset needed to place leaf bottom flush with medallion top
-    # The leaf has negative Z values (bottom at -base_thickness), so we need to
-    # translate it up by (thickness - leaf_bounds[0][2]) to make bottom align with top
-    leaf_z_offset = thickness - leaf_bounds[0][2]
+        # Calculate distance from center to place leaves
+        # We want the tip (furthest point) to touch the outer edge
+        max_leaf_extent = max(leaf_width_scaled, leaf_height_scaled) / 2
+        placement_radius = (radius * 0.95) - max_leaf_extent
 
-    # Create six leaf copies arranged in a circle
-    print("Arranging leaves in circle...")
-    leaves = []
-    for i in range(6):
-        angle = i * 60  # degrees
-        angle_rad = np.radians(angle)
+        # Helper function to calculate surface height at a given radius (matching the base)
+        def get_surface_height_at_radius(r):
+            """Calculate the surface height at a given radius, including convexity and ridges."""
+            # Base thickness
+            base_height = thickness
 
-        # Copy the leaf
-        leaf_copy = leaf_mesh.copy()
+            # Convexity (parabolic dome)
+            normalized_r = min(r / radius, 1.0)
+            convex_h = convexity_height * (1.0 - normalized_r**2)
 
-        # Rotate leaf to point outward
-        rotation_matrix = trimesh.transformations.rotation_matrix(
-            angle_rad + np.radians(90), [0, 0, 1]
+            # Ridge height (matching the base logic)
+            ridge_inner_r = radius * ridge_inner_ratio
+            ridge_outer_r = radius * ridge_outer_ratio
+            ridge_h = 0.0
+            if ridge_inner_r <= r <= ridge_outer_r:
+                normalized_ridge_r = (r - ridge_inner_r) / (ridge_outer_r - ridge_inner_r)
+                wave = np.abs(np.sin(normalized_ridge_r * num_ridges * np.pi))
+                ridge_h = wave * ridge_amplitude * thickness
+
+            return base_height + convex_h + ridge_h
+
+        # Calculate the offset needed to place leaf bottom flush with medallion top at placement radius
+        # The leaf has negative Z values (bottom at -base_thickness), so we need to
+        # translate it up to align with the curved surface
+        surface_height_at_leaf = get_surface_height_at_radius(placement_radius)
+        leaf_z_offset = surface_height_at_leaf - leaf_bounds[0][2]
+
+        # Create six leaf copies arranged in a circle
+        print("Arranging leaves in circle...")
+        leaves = []
+        for i in range(6):
+            angle = i * 60  # degrees
+            angle_rad = np.radians(angle)
+
+            # Copy the leaf
+            leaf_copy = leaf_mesh.copy()
+
+            # Rotate leaf to point outward
+            rotation_matrix = trimesh.transformations.rotation_matrix(
+                angle_rad + np.radians(90), [0, 0, 1]
+            )
+            leaf_copy.apply_transform(rotation_matrix)
+
+            # Translate to position around the circle
+            x = placement_radius * np.cos(angle_rad)
+            y = placement_radius * np.sin(angle_rad)
+            leaf_copy.apply_translation([x, y, leaf_z_offset])
+
+            leaves.append(leaf_copy)
+
+        # Create center disc floret
+        # The floret should fill the space between leaves and sit on the curved surface
+        floret_diameter = placement_radius * 0.6 * 2  # Convert radius to diameter
+
+        # The floret is at the center, so it should be positioned at the peak of the dome
+        center_surface_height = get_surface_height_at_radius(0)
+
+        print(f"Creating center disc floret (diameter: {floret_diameter:.2f}mm)...")
+        floret = create_disc_floret_mesh(
+            diameter_mm=floret_diameter,
+            base_height=center_surface_height,  # Use the curved surface height at center
+            floret_density=1.0
         )
-        leaf_copy.apply_transform(rotation_matrix)
 
-        # Translate to position around the circle
-        x = placement_radius * np.cos(angle_rad)
-        y = placement_radius * np.sin(angle_rad)
-        leaf_copy.apply_translation([x, y, leaf_z_offset])
+        # Combine all meshes
+        all_meshes.append(floret)
+        all_meshes.extend(leaves)
 
-        leaves.append(leaf_copy)
-
-    # Create center disc floret
-    # The floret should fill the space between leaves
-    floret_diameter = placement_radius * 0.6 * 2  # Convert radius to diameter
-    print(f"Creating center disc floret (diameter: {floret_diameter:.2f}mm)...")
-    floret = create_disc_floret_mesh(
-        diameter_mm=floret_diameter,
-        base_height=thickness,
-        floret_density=1.0
-    )
-
-    # Combine all meshes
     print("Combining all components...")
-    all_meshes = [base, floret] + leaves
     medallion = trimesh.util.concatenate(all_meshes)
 
     print(f"Final medallion: {len(medallion.vertices)} vertices, {len(medallion.faces)} faces")
@@ -319,11 +460,56 @@ def main():
         default='medallion.stl',
         help='Output STL file (default: medallion.stl)'
     )
+    parser.add_argument(
+        '--num-ridges',
+        type=int,
+        default=3,
+        help='Number of concentric ridges on the base (default: 3)'
+    )
+    parser.add_argument(
+        '--ridge-amplitude',
+        type=float,
+        default=0.3,
+        help='Height of ridges as fraction of medallion thickness (default: 0.3)'
+    )
+    parser.add_argument(
+        '--ridge-inner-ratio',
+        type=float,
+        default=0.15,
+        help='Inner radius for ridges as fraction of medallion radius (default: 0.15)'
+    )
+    parser.add_argument(
+        '--ridge-outer-ratio',
+        type=float,
+        default=0.85,
+        help='Outer radius for ridges as fraction of medallion radius (default: 0.85)'
+    )
+    parser.add_argument(
+        '--leaf-thickness-scale',
+        type=float,
+        default=1.5,
+        help='Scale factor for leaf z-dimension thickness (default: 1.5)'
+    )
+    parser.add_argument(
+        '--convexity-height',
+        type=float,
+        default=None,
+        help='Additional height at center for convex dome effect in mm (default: 3%% of diameter)'
+    )
 
     args = parser.parse_args()
 
     # Create the medallion
-    medallion = create_medallion(args.diameter, args.image)
+    medallion = create_medallion(
+        args.diameter,
+        args.image,
+        num_ridges=args.num_ridges,
+        ridge_amplitude=args.ridge_amplitude,
+        ridge_inner_ratio=args.ridge_inner_ratio,
+        ridge_outer_ratio=args.ridge_outer_ratio,
+        leaf_thickness_scale=args.leaf_thickness_scale,
+        convexity_height=args.convexity_height
+    )
 
     # Export to STL
     print(f"Exporting to {args.output}...")
